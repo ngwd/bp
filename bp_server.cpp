@@ -35,7 +35,8 @@ public:
 	// creating reply packet (i.e. processing the request)
 	Reply* process()
 	{
-		// if(mLong) sleep(3000);
+		if(mLong) 
+			sleep(15); // 15s
 		return new Reply(mLong? "L": "S");
 	}
 	Request(bool isLongRequest) : mLong(isLongRequest) {};
@@ -215,16 +216,16 @@ int Network::Select(unsigned timeout_micro)
 	}
 
 	// select() and wait
-	printf("select()\n");
 	int desc_ready_count = -1;
-	// if ((ret_val = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, &timeout)) < 0) 
-	if ((desc_ready_count = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, NULL)) < 0) 
+	if ((desc_ready_count = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, &timeout)) < 0) 
+	// printf("select()\n");
+	// if ((desc_ready_count = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, NULL)) < 0) 
 	{
 		fprintf(stderr, "select failed [%s]\n", strerror(errno));
 		return 0;
 	}
 
-  return desc_ready_count;
+	return desc_ready_count;
 }
 
 bool Network::handleNewConnection()
