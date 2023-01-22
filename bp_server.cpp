@@ -15,31 +15,54 @@
 
 #include <list>
 #include <algorithm>
+#include <thread>
+#include <future>
 
 class Reply
 {
 public:
-	char payload[1024] = {0}; 
-  explicit Reply(const char* src) { strncpy(payload, src, 1023); } 
+  explicit Reply(int senderId):senderId_(senderId){ } 
+	int senderId_ = 0;
 };
 
 // request from network packet
 class Request
 {
 	bool mLong;
+	Reply* long_task(int senderId) 
+	{
+		sleep(15);
+		return new Reply(senderId);
+	}
+	int requestNumber_ = -1;
 public:
 	// is it long or short in handling
 	bool isShort() const { return !mLong; }
 	bool islong() const { return mLong; }
 
 	// creating reply packet (i.e. processing the request)
-	Reply* process()
+	Reply* process(int fd)
 	{
-		if(mLong) 
-			sleep(15); // 15s
-		return new Reply(mLong? "L": "S");
+		if(mLong)
+    {
+			printf("fd (%d) is in long task from %d \n", fd, requestNumber_);
+			std::future<Reply*> ret = std::async(std::launch::async, &Request::long_task, this, requestNumber_);
+			return ret.get();
+    }
+		else 
+		{
+			return new Reply(requestNumber_);
+		}
 	}
-	Request(bool isLongRequest) : mLong(isLongRequest) {};
+	// explicit Request(char* src, size_t len) 
+	explicit Request(char* src) 
+	{
+		if (!src) mLong = false;
+		else {
+			requestNumber_ = atoi(src);	
+			mLong = !(requestNumber_ % 2); // even : long task; odd : short task
+		}
+	};
 };
 
 // single piece of network activity, either new connection or disconnect or new request
@@ -104,7 +127,7 @@ Request* NetworkActivity::request()
 	int ret_val = recv(fd_, buf, NetworkActivity::BUFLEN, 0);
 	if (ret_val == 0) 
 	{
-		printf("close fd:%d\n", fd_);
+		printf("close fd (%d) \n", fd_);
 		close();
 		return nullptr;
 	}
@@ -115,11 +138,11 @@ Request* NetworkActivity::request()
 	}
 	else // if (ret_val > 0)
 	{ 
-		printf("received data (len %d bytes) to fd %d): %s\n", ret_val, fd_, buf);
-		return new Request(buf[0] == 'L'); // 'L' means request takes long time to process.   and there is 'S'
+		printf("received data (len %d bytes) to fd (%d) from %s\n", ret_val, fd_, buf);
+		// return new Request(buf[0] == 'L'); // 'L' means request takes long time to process.   and there is 'S'
+		return new Request(buf); // 'L' means request takes long time to process.   and there is 'S'
 	}
 }
-
 
 // network layer
 class Network
@@ -156,7 +179,10 @@ private:
 void Network::sendReply(int fd, Reply* reply) 
 {
 	int ret_val = -1;
-  ret_val = send(fd, reply->payload, 32, 0);
+	char buf [1024] = {0};
+  sprintf(buf, "%d", reply->senderId_);
+	
+  ret_val = send(fd, buf, 32, 0);
 }
 
 int Network::createListenerSocket() 
@@ -255,7 +281,7 @@ bool Network::handleRequest(NetworkActivity& act)
 	Request* req = act.request();	
 	if (req)
 	{
-		Reply* rpl = req->process(); // handle the request
+		Reply* rpl = req->process(act.connection()); // handle the request
 		this->sendReply(act.connection(), rpl);
 		delete rpl;
 	}

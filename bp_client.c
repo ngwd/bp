@@ -19,18 +19,17 @@ int main (int argc, const char* argv[])
 	
 	struct sockaddr_in saddr;
 	int fd, ret_val;
-	struct hostent *local_host; /* need netdb.h for this */
+	struct hostent *local_host; // need netdb.h 
 
-	/* create a tcp socket */
 	fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP); 
 	if (fd == -1) 
 	{
- 	 fprintf(stderr, "socket failed [%s]\n", strerror(errno));
- 	 return -1;
+		fprintf(stderr, "socket failed [%s]\n", strerror(errno)); 
+		return -1;
 	}
 	printf("socket(fd) %d created\n", fd);
 
-	// initialize the server address */
+	// initialize the server address 
 	saddr.sin_family = AF_INET;		 
 	saddr.sin_port = htons(7000);	 
 	local_host = gethostbyname("127.0.0.1");
@@ -38,31 +37,30 @@ int main (int argc, const char* argv[])
 
 	// connect to the server socket 
 	ret_val = connect(fd, (struct sockaddr *)&saddr, sizeof(struct sockaddr_in));
-	if (ret_val == -1) {
- 	 fprintf(stderr, "connection failed [%s]\n", strerror(errno));
- 	 close(fd);
- 	 return -1;
+	if (ret_val == -1) 
+	{
+		fprintf(stderr, "connection failed [%s]\n", strerror(errno));
+		close(fd);
+		return -1;
 	}
 	printf("connected\n");
 
-	// printf("sleep before ending data\n");
-	// sleep(5);
-
-	// send data 
-	char buf[DATA_BUFFER] = {0};
-	int odd = argu & 0x1; 
-  char *content = odd ? "S" : "L";
-  int loop_times = argu % 1000;
+	// int odd = argu & 0x1; char *content = odd ? "S" : "L";
+  // int loop_times = argu % 1000;
 	// while (1) {
-  for(int i = 0; i < loop_times; ++i)
+  // for(int i = 0; i < loop_times; ++i)
 	{
-		ret_val = send(fd, content, 2, 0);
-		printf("%d sent data :%s (len %d bytes) \n", argu, content, ret_val);
-		ret_val = recv(fd, buf, DATA_BUFFER, 0);
-		printf("%d received data :%s (len %zu bytes) \n", argu, buf, strlen(buf));
-	}	
+		char buf[DATA_BUFFER] = {0};
+		sprintf(buf, "%d", argu);
+		ret_val = send(fd, buf, strlen(buf), 0);
+		printf("%d sent data :%s (len %d bytes) \n", argu, buf, ret_val);
 
-	/* close the socket */
+		char buf1[DATA_BUFFER] = {0}; 
+    ret_val = 0;
+		ret_val = recv(fd, buf1, DATA_BUFFER, 0);
+		printf("%d received data :%s (len %zu bytes) \n", argu, buf1, strlen(buf1));
+	}	
 	close(fd);
+	printf("%d closed \n", argu);
 	return 0;
 }
