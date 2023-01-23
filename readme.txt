@@ -1,5 +1,5 @@
 [server compiling]
-g++ bp_server.cpp -std=c++11 -pthread bp_server.cpp  -o bp_server -g
+g++ bp_server.cpp -std=c++11 -pthread  -o bp_server -g
 
 [client compiling]
 gcc bp_client.c -o bp_client

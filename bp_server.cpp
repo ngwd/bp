@@ -13,6 +13,8 @@
 #include <string.h>
 #include <errno.h>
 
+#include <sys/ioctl.h>
+
 #include <list>
 #include <algorithm>
 #include <thread>
@@ -21,7 +23,7 @@
 class Reply
 {
 public:
-  explicit Reply(int senderId):senderId_(senderId){ } 
+	explicit Reply(int senderId):senderId_(senderId){ } 
 	int senderId_ = 0;
 };
 
@@ -44,11 +46,11 @@ public:
 	Reply* process(int fd)
 	{
 		if(mLong)
-    {
+		{
 			printf("fd (%d) is in long task from %d \n", fd, requestNumber_);
 			std::future<Reply*> ret = std::async(std::launch::async, &Request::long_task, this, requestNumber_);
 			return ret.get();
-    }
+		}
 		else 
 		{
 			return new Reply(requestNumber_);
@@ -90,7 +92,7 @@ public:
 	
 	bool connectionActive(const fd_set& fds) const { return fd_ >= 0 && FD_ISSET(fd_, &fds); } 
 	bool connectionExist() const { return fd_ >= 0;}
-  bool listener() const {return listener_;}
+	bool listener() const {return listener_;}
 	explicit NetworkActivity(int fd = -1, bool listener = false):fd_(fd),listener_(listener){};
 	~NetworkActivity() 
 	{
@@ -99,7 +101,7 @@ public:
 private:
 	int fd_;
 	Activity act_;
-  bool listener_;
+	bool listener_;
 	const static int BUFLEN = 1024;
 };
 
@@ -112,8 +114,15 @@ int NetworkActivity::acceptNewConnection(const int& listener_fd)
 	// accept the new connection
 	int new_fd = -1; ;
 	if ((new_fd = accept(listener_fd, (struct sockaddr*)&new_addr, &addrlen)) < 0) 
+	// if ((new_fd = accept(listener_fd, NULL, NULL)) < 0) 
 	{
 		fprintf(stderr, "accept failed [%s]\n", strerror(errno));
+		if (errno != EWOULDBLOCK)
+		{
+			fprintf(stderr, "accept() failed");
+			::close(listener_fd);
+			exit(-1);
+		}
 		return new_fd;
 	}
 	printf("new connection with fd: %d accepted\n", new_fd);
@@ -129,18 +138,17 @@ Request* NetworkActivity::request()
 	{
 		printf("close fd (%d) \n", fd_);
 		close();
-		return nullptr;
+		return NULL;
 	}
 	else if (ret_val == -1) 
 	{
 		printf("recv() failed for fd: %d [%s]\n", fd_, strerror(errno));
-		return nullptr;
+		return NULL;
 	}
 	else // if (ret_val > 0)
 	{ 
 		printf("received data (len %d bytes) to fd (%d) from %s\n", ret_val, fd_, buf);
-		// return new Request(buf[0] == 'L'); // 'L' means request takes long time to process.   and there is 'S'
-		return new Request(buf); // 'L' means request takes long time to process.   and there is 'S'
+		return new Request(buf);
 	}
 }
 
@@ -148,7 +156,6 @@ Request* NetworkActivity::request()
 class Network
 {
 public:
-	// select failed, 0;	new data comes 1; new connection 2;
 	// new connection accept failed -1 
 	int Select(unsigned timeout); // returns set of happened things
 	void sendReply(int connection, Reply* reply); // sending reply to a request. no need to delete the reply after that
@@ -180,21 +187,36 @@ void Network::sendReply(int fd, Reply* reply)
 {
 	int ret_val = -1;
 	char buf [1024] = {0};
-  sprintf(buf, "%d", reply->senderId_);
+	sprintf(buf, "%d", reply->senderId_);
 	
-  ret_val = send(fd, buf, 32, 0);
+	ret_val = send(fd, buf, 32, 0);
 }
 
 int Network::createListenerSocket() 
 {
 	int fd = -1;
-	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP))== -1) 
+	if ((fd = socket(AF_INET, SOCK_STREAM, IPPROTO_TCP)) < 0) 
 	{
 		fprintf(stderr, "socket failed [%s]\n", strerror(errno));
 		return -1;
 	}
-
 	printf("Created a socket with fd: %d\n", fd);
+
+  /*
+  int on = 1, rc = 0;
+	if ((rc = setsockopt(fd, SOL_SOCKET,  SO_REUSEADDR, (char *)&on, sizeof(on))) < 0) 
+	{
+		fprintf(stderr, "setsockopt() failed [%s]\n", strerror(errno));
+		close (fd);
+		exit(-1);
+	}
+	if ((rc = ioctl(fd, FIONBIO, (char *)&on)) < 0)
+	{
+		fprintf(stderr, "ioctl() failed [%s]\n", strerror(errno));
+		close (fd);
+		return -1;
+	}
+  */
 
 	struct sockaddr_in saddr;
 	saddr.sin_family = AF_INET;
@@ -216,12 +238,12 @@ int Network::createListenerSocket()
 		close(fd);
 		return -1;
 	}
-  else 
+	else 
 	{
 		printf("listening on port 7000\n");
 	}
 	auto* p = new NetworkActivity(fd, true);
-  acts_.push_back(*p);  // listener_fd is at the head of the list
+	acts_.push_back(*p);	// listener_fd is at the head of the list
 	return fd;
 }
 
@@ -260,14 +282,14 @@ bool Network::handleNewConnection()
 	auto& listener = acts_.front();
 	if (!listener.connectionActive(read_fd_set_)) return false;
 
-  int listener_fd = listener.connection(); 
+	int listener_fd = listener.connection(); 
 	auto* na =	new NetworkActivity(new_fd = NetworkActivity::acceptNewConnection(listener_fd));
-  if (!na) return false;
+	if (!na) return false;
 
 	for(auto & act: acts_)
 	{
 		if (act.listener() || act.connectionExist()) continue;
-    auto& a = *na;
+		auto& a = *na;
 		std::swap(act, a);
 		return true;
 	}
@@ -279,13 +301,14 @@ bool Network::handleRequest(NetworkActivity& act)
 {
 	if (act.listener() || !act.connectionActive(read_fd_set_)) return false; 	
 	Request* req = act.request();	
-	if (req)
-	{
-		Reply* rpl = req->process(act.connection()); // handle the request
-		this->sendReply(act.connection(), rpl);
-		delete rpl;
-	}
+	if (!req) return false;
+
+	Reply* rpl = req->process(act.connection()); // handle the request
+	this->sendReply(act.connection(), rpl);
+
+	delete rpl;
 	delete req;
+
 	return true;
 }
 
@@ -315,9 +338,9 @@ int main()
 	while(!network.shouldExit())
 	{
 		int ndesc = network.Select(100); 
-    if (ndesc <= 0) continue; 
+		if (ndesc <= 0) continue; 
 		if (network.handleNewConnection()) --ndesc;
-    if (!ndesc) continue;
+		if (!ndesc) continue;
 
 		for(auto & act: network.acts_) 
 		{
@@ -325,7 +348,7 @@ int main()
 			if (!ndesc) continue;
 		}
 	}
-  return 0;
+	return 0;
 }
 
 /*

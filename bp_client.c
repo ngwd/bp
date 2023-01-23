@@ -6,16 +6,15 @@
 #include <string.h>
 #include <sys/socket.h>
 #include <unistd.h>
+#include <time.h>
+
 #define DATA_BUFFER 1024 
 
 int main (int argc, const char* argv[]) 
 {
 	int argu = 1;
 	// for(int i = 0; i< argc; ++i) {printf("-- %s\n", argv[i]);}
-	if (argc > 1) 
-	{
-		argu = atoi(argv[1]);
-	}
+	if (argc > 1) { argu = atoi(argv[1]); }
 	
 	struct sockaddr_in saddr;
 	int fd, ret_val;
@@ -45,18 +44,20 @@ int main (int argc, const char* argv[])
 	}
 	printf("connected\n");
 
-	// int odd = argu & 0x1; char *content = odd ? "S" : "L";
-  // int loop_times = argu % 1000;
+	int odd = argu & 0x1; 
+	// int loop_times = argu % 1000;
 	// while (1) {
-  // for(int i = 0; i < loop_times; ++i)
+  // srand(time(NULL));
+	// for(int i = 0; i < 10; ++i)
 	{
+		// argu = rand() % 100 + 1;
 		char buf[DATA_BUFFER] = {0};
 		sprintf(buf, "%d", argu);
 		ret_val = send(fd, buf, strlen(buf), 0);
 		printf("%d sent data :%s (len %d bytes) \n", argu, buf, ret_val);
 
 		char buf1[DATA_BUFFER] = {0}; 
-    ret_val = 0;
+		ret_val = 0;
 		ret_val = recv(fd, buf1, DATA_BUFFER, 0);
 		printf("%d received data :%s (len %zu bytes) \n", argu, buf1, strlen(buf1));
 	}	
