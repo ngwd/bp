@@ -13,12 +13,15 @@
 #include <string.h>
 #include <errno.h>
 
+#include <condition_variable>
+#include <mutex>
+#include <thread>
+
 #include <sys/ioctl.h>
 
 #include <list>
+#include <queue>
 #include <algorithm>
-#include <thread>
-#include <future>
 
 class Reply
 {
@@ -31,32 +34,19 @@ public:
 class Request
 {
 	bool mLong;
-	Reply* long_task(int senderId) 
-	{
-		sleep(15);
-		return new Reply(senderId);
-	}
 	int requestNumber_ = -1;
 public:
 	// is it long or short in handling
 	bool isShort() const { return !mLong; }
-	bool islong() const { return mLong; }
+	bool isLong() const { return mLong; }
 
 	// creating reply packet (i.e. processing the request)
 	Reply* process(int fd)
 	{
-		if(mLong)
-		{
-			printf("fd (%d) is in long task from %d \n", fd, requestNumber_);
-			std::future<Reply*> ret = std::async(std::launch::async, &Request::long_task, this, requestNumber_);
-			return ret.get();
-		}
-		else 
-		{
-			return new Reply(requestNumber_);
-		}
+		if(mLong) 
+			sleep(15);
+		return new Reply(requestNumber_);
 	}
-	// explicit Request(char* src, size_t len) 
 	explicit Request(char* src) 
 	{
 		if (!src) mLong = false;
@@ -169,6 +159,9 @@ public:
 	}
 	bool handleNewConnection();
 	bool handleRequest(NetworkActivity& act);
+
+	void long_task_producer(Request* req, int fd);
+	void long_task_consumer(int fd);
 	~Network() 
 	{
 		for(std::list<NetworkActivity>::iterator it = acts_.begin(); it != acts_.end(); ++it)
@@ -181,6 +174,10 @@ private:
 	fd_set read_fd_set_;
 	int createListenerSocket();
 	const int PORT = 7000;
+
+  std::queue<Reply*> pending_replys_;
+	std::condition_variable cv_;
+	std::mutex mtx_;
 };
 
 void Network::sendReply(int fd, Reply* reply) 
@@ -202,21 +199,25 @@ int Network::createListenerSocket()
 	}
 	printf("Created a socket with fd: %d\n", fd);
 
-  /*
-  int on = 1, rc = 0;
-	if ((rc = setsockopt(fd, SOL_SOCKET,  SO_REUSEADDR, (char *)&on, sizeof(on))) < 0) 
+	/*
+  bool need_non_blocking = false; 
+  if (need_non_blocking)
 	{
-		fprintf(stderr, "setsockopt() failed [%s]\n", strerror(errno));
-		close (fd);
-		exit(-1);
+		int on = 1, rc = 0;
+		if ((rc = setsockopt(fd, SOL_SOCKET,  SO_REUSEADDR, (char *)&on, sizeof(on))) < 0) 
+		{
+			fprintf(stderr, "setsockopt() failed [%s]\n", strerror(errno));
+			close (fd);
+			exit(-1);
+		}
+		if ((rc = ioctl(fd, FIONBIO, (char *)&on)) < 0)
+		{
+			fprintf(stderr, "ioctl() failed [%s]\n", strerror(errno));
+			close (fd);
+			return -1;
+		}
 	}
-	if ((rc = ioctl(fd, FIONBIO, (char *)&on)) < 0)
-	{
-		fprintf(stderr, "ioctl() failed [%s]\n", strerror(errno));
-		close (fd);
-		return -1;
-	}
-  */
+	*/
 
 	struct sockaddr_in saddr;
 	saddr.sin_family = AF_INET;
@@ -302,14 +303,49 @@ bool Network::handleRequest(NetworkActivity& act)
 	if (act.listener() || !act.connectionActive(read_fd_set_)) return false; 	
 	Request* req = act.request();	
 	if (!req) return false;
+  if (req->isLong()) // long task
+	{
+		// Reply consumer (sending out)
+		std::thread consumer = std::thread(&Network::long_task_consumer, this, act.connection()); 
+		// Reply producer (according the request)
+		std::thread producer = std::thread(&Network::long_task_producer, this, req, act.connection());
 
-	Reply* rpl = req->process(act.connection()); // handle the request
-	this->sendReply(act.connection(), rpl);
+    producer.join();
+		consumer.join();
+	}
+	else  // short task 
+	{
+		Reply* rpl = req->process(act.connection()); // handle the request
+		this->sendReply(act.connection(), rpl);
+		delete rpl;
+	}
 
-	delete rpl;
 	delete req;
-
 	return true;
+}
+
+void Network::long_task_consumer(int fd)
+{
+	std::unique_lock<std::mutex> lck(mtx_);
+	while (pending_replys_.size() == 0) 
+	{ 
+		cv_.wait(lck); 
+	}
+	while (!pending_replys_.empty()) 
+	{
+		Reply* rpl = pending_replys_.front();
+		this->sendReply(fd, rpl);
+		pending_replys_.pop();
+		delete rpl;
+	}
+}
+
+void Network::long_task_producer(Request* req, int fd)
+{
+	std::unique_lock<std::mutex> lck(mtx_);
+	Reply* rpl = req->process(fd); 
+	pending_replys_.push(rpl);
+	cv_.notify_one();
 }
 
 /*
@@ -345,7 +381,7 @@ int main()
 		for(auto & act: network.acts_) 
 		{
 			if (network.handleRequest(act)) { --ndesc; }
-			if (!ndesc) continue;
+			if (!ndesc) break;
 		}
 	}
 	return 0;
