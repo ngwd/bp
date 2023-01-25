@@ -20,7 +20,9 @@
 #include <sys/ioctl.h>
 
 #include <list>
-#include <queue>
+#include "include/thread_pool.h"
+// #include "include/queue_ts.h"
+#include <queue> 
 #include <algorithm>
 
 class Reply
@@ -136,7 +138,7 @@ Request* NetworkActivity::request()
 		return NULL;
 	}
 	else // if (ret_val > 0)
-	{ 
+	{
 		printf("received data (len %d bytes) to fd (%d) from %s\n", ret_val, fd_, buf);
 		return new Request(buf);
 	}
@@ -160,8 +162,8 @@ public:
 	bool handleNewConnection();
 	bool handleRequest(NetworkActivity& act);
 
-	void long_task_producer(Request* req, int fd);
-	void long_task_consumer(int fd);
+	static void long_task_producer(Request* req, int fd);
+	static void long_task_consumer(Network* nw, int fd);
 	~Network() 
 	{
 		for(std::list<NetworkActivity>::iterator it = acts_.begin(); it != acts_.end(); ++it)
@@ -175,10 +177,18 @@ private:
 	int createListenerSocket();
 	const int PORT = 7000;
 
-  std::queue<Reply*> pending_replys_;
-	std::condition_variable cv_;
-	std::mutex mtx_;
+	static std::condition_variable cv_;
+	// static queue_ts<Reply*> pending_replys_;
+	static std::queue<Reply*> pending_replys_;
+	static std::mutex mtx_;
+  static thread_pool pool_;
+	static const int MAX_THREAD_SIZE_IN_POOL = 8;
 };
+ 
+thread_pool Network::pool_(Network::MAX_THREAD_SIZE_IN_POOL);
+std::mutex Network::mtx_;
+std::queue<Reply*> Network::pending_replys_;
+std::condition_variable Network::cv_;
 
 void Network::sendReply(int fd, Reply* reply) 
 {
@@ -200,11 +210,11 @@ int Network::createListenerSocket()
 	printf("Created a socket with fd: %d\n", fd);
 
 	/*
-  bool need_non_blocking = false; 
-  if (need_non_blocking)
+	bool need_non_blocking = true; 
+	if (need_non_blocking)
 	{
 		int on = 1, rc = 0;
-		if ((rc = setsockopt(fd, SOL_SOCKET,  SO_REUSEADDR, (char *)&on, sizeof(on))) < 0) 
+		if ((rc = setsockopt(fd, SOL_SOCKET,	SO_REUSEADDR, (char *)&on, sizeof(on))) < 0) 
 		{
 			fprintf(stderr, "setsockopt() failed [%s]\n", strerror(errno));
 			close (fd);
@@ -303,17 +313,23 @@ bool Network::handleRequest(NetworkActivity& act)
 	if (act.listener() || !act.connectionActive(read_fd_set_)) return false; 	
 	Request* req = act.request();	
 	if (!req) return false;
-  if (req->isLong()) // long task
+	if (req->isLong()) // long task
 	{
+		/*
+    pool_.submit2(&Network::long_task_consumer, this, act.connection());
+    pool_.submit2(&Network::long_task_producer, this, req, act.connection());
+		*/
+
 		// Reply consumer (sending out)
 		std::thread consumer = std::thread(&Network::long_task_consumer, this, act.connection()); 
+     
 		// Reply producer (according the request)
-		std::thread producer = std::thread(&Network::long_task_producer, this, req, act.connection());
+		std::thread producer = std::thread(&Network::long_task_producer, req, act.connection());
 
-    producer.join();
+		producer.join();
 		consumer.join();
 	}
-	else  // short task 
+	else	// short task 
 	{
 		Reply* rpl = req->process(act.connection()); // handle the request
 		this->sendReply(act.connection(), rpl);
@@ -324,28 +340,30 @@ bool Network::handleRequest(NetworkActivity& act)
 	return true;
 }
 
-void Network::long_task_consumer(int fd)
+void Network::long_task_consumer(Network* nw, int fd)
 {
-	std::unique_lock<std::mutex> lck(mtx_);
-	while (pending_replys_.size() == 0) 
+	std::unique_lock<std::mutex> lck(Network::mtx_);
+	while (Network::pending_replys_.size() == 0) 
 	{ 
-		cv_.wait(lck); 
+		Network::cv_.wait(lck); 
 	}
-	while (!pending_replys_.empty()) 
+	while (!Network::pending_replys_.empty()) 
 	{
-		Reply* rpl = pending_replys_.front();
-		this->sendReply(fd, rpl);
-		pending_replys_.pop();
+		Reply* rpl = Network::pending_replys_.front();
+		// Reply* rpl = NULL;
+		nw->sendReply(fd, rpl);
+		// Network::pending_replys_.pop(rpl);
+		Network::pending_replys_.pop();
 		delete rpl;
 	}
 }
 
 void Network::long_task_producer(Request* req, int fd)
 {
-	std::unique_lock<std::mutex> lck(mtx_);
+	std::unique_lock<std::mutex> lck(Network::mtx_);
 	Reply* rpl = req->process(fd); 
-	pending_replys_.push(rpl);
-	cv_.notify_one();
+	Network::pending_replys_.push(rpl);
+	Network::cv_.notify_one();
 }
 
 /*

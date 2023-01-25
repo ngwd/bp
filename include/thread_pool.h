@@ -73,7 +73,7 @@ public:
 		init();
 	}
 
-	// Submit a function to be executed asynchronously by the pool
+	// submit a function to be executed asynchronously by the pool
 	template<typename F, typename...Args>
 	auto submit(F&& f, Args&&... args) -> std::future<decltype(f(args...))> 
 	{
@@ -94,7 +94,33 @@ public:
 
 		// Return future from promise
 		return task_ptr->get_future();
-	}
+	};
+
+/*
+	// submit a class member function to be executed asynchronously by the pool
+	template<typename F, typename Obj, typename...Args>
+	auto submit2(F&& f,  Obj&& o, Args&&... args) 
+		-> std::future<decltype((&Obj::(std::forward<F>(f))(args...))> 
+	{
+		// Create a function with bounded parameters ready to execute
+		std::function<decltype(f(args...))()> func = std::bind(std::forward<F>(f), o, std::forward<Args>(args)...);
+
+		// Encapsulate it into a shared ptr in order to be able to copy construct / assign 
+		auto task_ptr = std::make_shared<std::packaged_task<decltype(f(args...))()>>(func);
+
+		// Wrap packaged task into void function
+		std::function<void()> wrapper_func = [task_ptr]() { (*task_ptr)(); };
+
+		// Enqueue generic wrapper function
+		queue_.push(wrapper_func);
+
+		// Wake up one thread if its waiting
+		conditional_lock_.notify_one();
+
+		// Return future from promise
+		return task_ptr->get_future();
+	};
+*/
 	thread_pool(const thread_pool &) = delete;
 	thread_pool & operator=(const thread_pool &) = delete;
 	thread_pool(thread_pool &&) = delete;

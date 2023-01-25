@@ -143,3 +143,17 @@ data --> fd (5)
 received data (len 5 bytes) to fd (5) from 28572
 data --> fd (5)
 close fd (5)
+
+
+
+
+
+
+Thread creation is a relatively long operation. 
+When the number of active (working) threads becomes large, 
+the context switch between them starts taking significant time and becomes comparable or even bigger than a user time. 
+That is why usually few (10) threads are created ahead and the threads live in a pool waiting 
+till an object of a work comes. 
+The work objects are usually placed into a queue. 
+So the threads wait and then pull the objects from the queue. 
+When a thread finishes handling a work object it returns back to the thread pool and waits till the new work object appears in the queue. Etc.
