@@ -16,13 +16,14 @@
 #include <condition_variable>
 #include <mutex>
 #include <thread>
+#include <memory>
 
 #include <sys/ioctl.h>
 
 #include <list>
 #include "include/thread_pool.h"
-// #include "include/queue_ts.h"
-#include <queue> 
+#include "include/queue_ts.h"
+// #include <queue> 
 #include <algorithm>
 
 class Reply
@@ -36,28 +37,30 @@ public:
 class Request
 {
 	bool mLong;
-	int requestNumber_ = -1;
 public:
+	int requestNumber = -1;
 	// is it long or short in handling
 	bool isShort() const { return !mLong; }
 	bool isLong() const { return mLong; }
 
 	// creating reply packet (i.e. processing the request)
-	Reply* process(int fd)
-	{
-		if(mLong) 
-			sleep(15);
-		return new Reply(requestNumber_);
-	}
+	static Reply* process(int fd, int requestNumber, bool longTask = false); 
 	explicit Request(char* src) 
 	{
 		if (!src) mLong = false;
-		else {
-			requestNumber_ = atoi(src);	
-			mLong = !(requestNumber_ % 2); // even : long task; odd : short task
+		else 
+		{
+			requestNumber = atoi(src);	
+			mLong = !(requestNumber % 2); // even : long task; odd : short task
 		}
 	};
 };
+Reply* Request::process(int fd, int requestNumber, bool longTask)
+{
+	if(longTask) 
+		sleep(15);
+	return new Reply(requestNumber);
+}
 
 // single piece of network activity, either new connection or disconnect or new request
 class NetworkActivity
@@ -139,7 +142,7 @@ Request* NetworkActivity::request()
 	}
 	else // if (ret_val > 0)
 	{
-		printf("received data (len %d bytes) to fd (%d) from %s\n", ret_val, fd_, buf);
+		printf("received data (len %d bytes) to fd (%d) from sender: %s\n", ret_val, fd_, buf);
 		return new Request(buf);
 	}
 }
@@ -160,34 +163,33 @@ public:
 		}
 	}
 	bool handleNewConnection();
-	bool handleRequest(NetworkActivity& act);
+	bool handleRequest(NetworkActivity* act);
 
-	static void long_task_producer(Request* req, int fd);
+  static void long_task_producer(int requestNumber, int fd);
 	static void long_task_consumer(Network* nw, int fd);
 	~Network() 
 	{
-		for(std::list<NetworkActivity>::iterator it = acts_.begin(); it != acts_.end(); ++it)
+		for(auto act: acts_) 
 		{
-			acts_.erase(it);
+			delete act;
 		}
 	}
-	std::list<NetworkActivity> acts_;
+	std::list<NetworkActivity*> acts_;
 private: 
 	fd_set read_fd_set_;
 	int createListenerSocket();
 	const int PORT = 7000;
 
 	static std::condition_variable cv_;
-	// static queue_ts<Reply*> pending_replys_;
-	static std::queue<Reply*> pending_replys_;
+	static queue_ts<Reply*> pending_replys_;
 	static std::mutex mtx_;
   static thread_pool pool_;
-	static const int MAX_THREAD_SIZE_IN_POOL = 8;
+	static const int MAX_THREAD_SIZE_IN_POOL = 3;
 };
  
 thread_pool Network::pool_(Network::MAX_THREAD_SIZE_IN_POOL);
 std::mutex Network::mtx_;
-std::queue<Reply*> Network::pending_replys_;
+queue_ts<Reply*> Network::pending_replys_;
 std::condition_variable Network::cv_;
 
 void Network::sendReply(int fd, Reply* reply) 
@@ -195,7 +197,7 @@ void Network::sendReply(int fd, Reply* reply)
 	int ret_val = -1;
 	char buf [1024] = {0};
 	sprintf(buf, "%d", reply->senderId_);
-	
+  printf("sendReply to sender: %d\n", reply->senderId_);
 	ret_val = send(fd, buf, 32, 0);
 }
 
@@ -209,7 +211,6 @@ int Network::createListenerSocket()
 	}
 	printf("Created a socket with fd: %d\n", fd);
 
-	/*
 	bool need_non_blocking = true; 
 	if (need_non_blocking)
 	{
@@ -227,7 +228,6 @@ int Network::createListenerSocket()
 			return -1;
 		}
 	}
-	*/
 
 	struct sockaddr_in saddr;
 	saddr.sin_family = AF_INET;
@@ -254,7 +254,7 @@ int Network::createListenerSocket()
 		printf("listening on port 7000\n");
 	}
 	auto* p = new NetworkActivity(fd, true);
-	acts_.push_back(*p);	// listener_fd is at the head of the list
+	acts_.push_back(p);	// listener_fd is at the head of the list
 	return fd;
 }
 
@@ -268,16 +268,15 @@ int Network::Select(unsigned timeout_micro)
 
 	// Set the fd_set before passing it to the select call 
 	FD_ZERO( &read_fd_set_ );
-	for(auto const& act: acts_)
+	for(auto act: acts_)
 	{
-		if (act.connectionExist())
-			FD_SET(act.connection(), &read_fd_set_);
+		if (act->connectionExist())
+			FD_SET(act->connection(), &read_fd_set_);
 	}
 
 	// select() and wait
 	int desc_ready_count = -1;
 	if ((desc_ready_count = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, &timeout)) < 0) 
-	// printf("select()\n");
 	// if ((desc_ready_count = select(FD_SETSIZE, &read_fd_set_, NULL, NULL, NULL)) < 0) 
 	{
 		fprintf(stderr, "select failed [%s]\n", strerror(errno));
@@ -290,49 +289,39 @@ int Network::Select(unsigned timeout_micro)
 bool Network::handleNewConnection()
 {
 	int new_fd = -1;
-	auto& listener = acts_.front();
-	if (!listener.connectionActive(read_fd_set_)) return false;
+	auto listener = acts_.front();
+	if (!listener->connectionActive(read_fd_set_)) return false;
 
-	int listener_fd = listener.connection(); 
-	auto* na =	new NetworkActivity(new_fd = NetworkActivity::acceptNewConnection(listener_fd));
+	int listener_fd = listener->connection(); 
+	auto na =	new NetworkActivity(new_fd = NetworkActivity::acceptNewConnection(listener_fd));
 	if (!na) return false;
 
-	for(auto & act: acts_)
+	for(auto act: acts_)
 	{
-		if (act.listener() || act.connectionExist()) continue;
-		auto& a = *na;
-		std::swap(act, a);
+		if (act->listener() || act->connectionExist()) continue;
+		std::swap(*act, *na);
 		return true;
 	}
-	acts_.push_back(*na);
+	acts_.push_back(na);
 	return true;
 }
 
-bool Network::handleRequest(NetworkActivity& act)
+bool Network::handleRequest(NetworkActivity* act)
 {
-	if (act.listener() || !act.connectionActive(read_fd_set_)) return false; 	
-	Request* req = act.request();	
+	if (act->listener() || !act->connectionActive(read_fd_set_)) return false; 	
+	Request* req = act->request();	
 	if (!req) return false;
+	int fd = act->connection();
 	if (req->isLong()) // long task
 	{
-		/*
-    pool_.submit2(&Network::long_task_consumer, this, act.connection());
-    pool_.submit2(&Network::long_task_producer, this, req, act.connection());
-		*/
-
-		// Reply consumer (sending out)
-		std::thread consumer = std::thread(&Network::long_task_consumer, this, act.connection()); 
-     
-		// Reply producer (according the request)
-		std::thread producer = std::thread(&Network::long_task_producer, req, act.connection());
-
-		producer.join();
-		consumer.join();
+    pool_.submit(&Network::long_task_producer, req->requestNumber, fd);
+    pool_.submit(&Network::long_task_consumer, this, fd);
 	}
 	else	// short task 
 	{
-		Reply* rpl = req->process(act.connection()); // handle the request
-		this->sendReply(act.connection(), rpl);
+		Reply* rpl = Request::process(fd, req->requestNumber); // handle the request
+    printf("short task\n");
+		this->sendReply(fd, rpl);
 		delete rpl;
 	}
 
@@ -349,19 +338,18 @@ void Network::long_task_consumer(Network* nw, int fd)
 	}
 	while (!Network::pending_replys_.empty()) 
 	{
-		Reply* rpl = Network::pending_replys_.front();
-		// Reply* rpl = NULL;
+		Reply* rpl = NULL;
+		Network::pending_replys_.pop(rpl);
+    printf("long task\n");
 		nw->sendReply(fd, rpl);
-		// Network::pending_replys_.pop(rpl);
-		Network::pending_replys_.pop();
 		delete rpl;
 	}
 }
 
-void Network::long_task_producer(Request* req, int fd)
+void Network::long_task_producer(int requestNumber, int fd)
 {
 	std::unique_lock<std::mutex> lck(Network::mtx_);
-	Reply* rpl = req->process(fd); 
+	Reply* rpl = Request::process(requestNumber, fd, true); // handle the long request
 	Network::pending_replys_.push(rpl);
 	Network::cv_.notify_one();
 }
@@ -396,7 +384,7 @@ int main()
 		if (network.handleNewConnection()) --ndesc;
 		if (!ndesc) continue;
 
-		for(auto & act: network.acts_) 
+		for(auto act: network.acts_) 
 		{
 			if (network.handleRequest(act)) { --ndesc; }
 			if (!ndesc) break;
